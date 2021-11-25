@@ -1,0 +1,134 @@
+stages:
+  - build
+  - deploy
+
+variables:
+  GIT_CICD_USER_KEY: d9dad3b8cdcf748a98f251605e92062dc20eb45b
+  K8_WSO2_CONF_REPO: raw.githubusercontent.com/casablanca-project/wso2-repo/master/wso2-
+  K8_CLUSTER_NAME_INT_PRD: prodint1
+  K8_CLUSTER_SERVER_INT_PRD: https://rancher.casahubppp.live/k8s/clusters/c-sszg6
+  K8_USER_NAME_PRD: u-3gd5rh2wgj
+  K8_USER_TOKEN_PRD: kubeconfig-u-3gd5rh2wgj:97jn86g656xgzpq249mhv6k8sl44dlgcz5ljb7xrvhd8bq52jb8kpr
+  K8_HELM_CHART_NAME_WSO2_COMP_INT: wso2-master-int-composite
+  K8_NAMESPACE_WSO2_COMP: wso2-comp
+  K8_RELEASE_NAME_WSO2_COMP_INT: wso2-comp-int
+  K8_CLUSTER_NAME_EXT_PRD: proddmz0
+  K8_CLUSTER_SERVER_EXT_PRD: https://rancher.casahubppp.live/k8s/clusters/c-wgrws
+  K8_CHART_NAME_WSO2_COMP_EXT: wso2-master-ext-composite
+  K8_RELEASE_NAME_WSO2_COMP_EXT: wso2-comp-ext
+  K8_NAMESPACE_WSO2_HA: wso2ha
+  K8_RELEASE_NAME_WSO2_INT: wso2int
+  K8_RELEASE_NAME_WSO2_EXT: wso2ext
+  K8_HELM_CHART_NAME_WSO2_HA_INT: wso2-master-int-ha
+  K8_CHART_NAME_WSO2_HA_EXT: wso2-master-ext-ha
+
+Merge Deploy Data into Charts:
+  stage: build
+  image: hypnoglow/kubernetes-helm:2.9.1
+  only:
+    - /^v.*/
+  script:
+    - helm repo add WSO2-HELM 'https://'$GIT_CICD_USER_KEY'@'$K8_WSO2_CONF_REPO'helm'
+    - WKDIR=$PWD/repo/workdir
+    - mkdir -p $WKDIR
+    - NEXTDIR=$WKDIR/wso2-composite/internal-subnet
+    - mkdir -p $NEXTDIR
+    - helm fetch WSO2-HELM/wso2-master-int-composite --untar=true --version=0.9.32 -d $NEXTDIR
+    - mv $NEXTDIR/wso2-master-int-composite/charts/* $NEXTDIR/
+    - rm -f $NEXTDIR/wso2-master-int-composite/requirements.lock
+
+    - NEXTDIR=$WKDIR/wso2-composite/external-subnet
+    - mkdir -p $NEXTDIR 
+    - helm fetch WSO2-HELM/wso2-master-ext-composite --untar=true --version=0.9.32 -d $NEXTDIR
+    - mv $NEXTDIR/wso2-master-ext-composite/charts/* $NEXTDIR/
+    - rm -f $NEXTDIR/wso2-master-ext-composite/requirements.lock
+
+    - NEXTDIR=$WKDIR/wso2-ha/internal-subnet
+    - mkdir -p $NEXTDIR
+    - helm fetch WSO2-HELM/wso2-master-int-ha --untar=true --version=0.9.32 -d $NEXTDIR
+    - mv $NEXTDIR/wso2-master-int-ha/charts/* $NEXTDIR/
+    - rm -f $NEXTDIR/wso2-master-int-ha/requirements.lock
+
+    - NEXTDIR=$WKDIR/wso2-ha/external-subnet
+    - mkdir -p $NEXTDIR
+    - helm fetch WSO2-HELM/wso2-master-ext-ha --untar=true --version=0.9.32 -d $NEXTDIR
+    - mv $NEXTDIR/wso2-master-ext-ha/charts/* $NEXTDIR/
+    - rm -f $NEXTDIR/wso2-master-ext-ha/requirements.lock
+
+    - ./copy.sh $WKDIR
+  artifacts:
+    paths:
+      - repo/workdir
+    expire_in: 20 minutes
+
+Deploy WSO2 Composite to Internal:
+  stage: deploy
+  image: lwolf/helm-kubectl-docker:v1.18.2-v2.16.7
+  only:
+    - /^v.*-comp/
+  before_script:
+    - kubectl config set-cluster $K8_CLUSTER_NAME_INT_PRD --server=$K8_CLUSTER_SERVER_INT_PRD --insecure-skip-tls-verify=true
+    - kubectl config set-credentials $K8_USER_NAME_PRD --token=$K8_USER_TOKEN_PRD
+    - kubectl config set-context $K8_CLUSTER_NAME_INT_PRD --cluster=$K8_CLUSTER_NAME_INT_PRD --user=$K8_USER_NAME_PRD --namespace=$K8_NAMESPACE_WSO2_INT
+    - kubectl config use-context $K8_CLUSTER_NAME_INT_PRD
+    - mkdir -p /root/.helm/repository/
+    - touch /root/.helm/repository/repositories.yaml
+    - helm init --client-only
+    - helm repo add stable https://charts.helm.sh/stable
+    - cd repo/workdir/wso2-composite/internal-subnet/
+    - helm dep up ./$K8_HELM_CHART_NAME_WSO2_COMP_INT
+  script:
+    - CHART_VERSION=$(echo $CI_COMMIT_TAG | sed -E 's/^v(\d+\.\d+\.\d+).*$/\1/')
+    - helm upgrade --install --namespace $K8_NAMESPACE_WSO2_COMP --version "CHART_VERSION" $K8_RELEASE_NAME_WSO2_COMP_INT ./$K8_HELM_CHART_NAME_WSO2_COMP_INT
+
+Deploy WSO2 Composite to DMZ:
+  stage: deploy
+  image: lwolf/helm-kubectl-docker:v1.18.2-v2.16.7
+  only:
+    - /^v.*-comp/
+  before_script:
+    - kubectl config set-cluster $K8_CLUSTER_NAME_EXT_PRD --server=$K8_CLUSTER_SERVER_EXT_PRD --insecure-skip-tls-verify=true
+    - kubectl config set-credentials $K8_USER_NAME_PRD --token=$K8_USER_TOKEN_PRD
+    - kubectl config set-context $K8_CLUSTER_NAME_EXT_PRD --cluster=$K8_CLUSTER_NAME_EXT_PRD --user=$K8_USER_NAME_PRD --namespace=$K8_NAMESPACE
+    - kubectl config use-context $K8_CLUSTER_NAME_EXT_PRD
+    - mkdir -p /root/.helm/repository/
+    - touch /root/.helm/repository/repositories.yaml
+    - helm init --client-only
+    - helm repo add stable https://charts.helm.sh/stable
+    - cd repo/workdir/wso2-composite/external-subnet/
+    - helm dep up ./$K8_CHART_NAME_WSO2_COMP_EXT
+  script:
+    - CHART_VERSION=$(echo $CI_COMMIT_TAG | sed -E 's/^v(\d+\.\d+\.\d+).*$/\1/')
+    - helm upgrade --install --namespace $K8_NAMESPACE_WSO2_COMP --version "$CHART_VERSION" $K8_RELEASE_NAME_WSO2_COMP_EXT ./$K8_CHART_NAME_WSO2_COMP_EXT
+
+# Deploy WSO2 HA to Internal:
+#   stage: deploy
+#   only:
+#     - /^v.*-ha/
+#   before_script:
+#     - kubectl config set-cluster $K8_CLUSTER_NAME_INT_PRD --server=$K8_CLUSTER_SERVER_INT_PRD --insecure-skip-tls-verify=true
+#     - kubectl config set-credentials $K8_USER_NAME_PRD --token=$K8_USER_TOKEN_PRD
+#     - kubectl config set-context $K8_CLUSTER_NAME_INT_PRD --cluster=$K8_CLUSTER_NAME_INT_PRD --user=$K8_USER_NAME_PRD --namespace=$K8_NAMESPACE_WSO2_INT
+#     - kubectl config use-context $K8_CLUSTER_NAME_INT_PRD
+#     - helm init --client-only
+#     - cd repo/workdir/wso2-ha/internal-subnet/
+#     - helm dep up ./$K8_HELM_CHART_NAME_WSO2_HA_INT
+#   script:
+#     - CHART_VERSION=$(echo $CI_COMMIT_TAG | sed -E 's/^v(\d+\.\d+\.\d+).*$/\1/')
+#     - helm upgrade --install --namespace $K8_NAMESPACE_WSO2_HA --version "$CHART_VERSION" $K8_RELEASE_NAME_WSO2_INT ./$K8_HELM_CHART_NAME_WSO2_HA_INT
+
+# Deploy WSO2 HA to DMZ:
+#   stage: deploy
+#   only:
+#     - /^v.*-ha/
+#   before_script:
+#     - kubectl config set-cluster $K8_CLUSTER_NAME_EXT_PRD --server=$K8_CLUSTER_SERVER_EXT_PRD --insecure-skip-tls-verify=true
+#     - kubectl config set-credentials $K8_USER_NAME_PRD --token=$K8_USER_TOKEN_PRD
+#     - kubectl config set-context $K8_CLUSTER_NAME_EXT_PRD --cluster=$K8_CLUSTER_NAME_EXT_PRD --user=$K8_USER_NAME_PRD --namespace=$K8_NAMESPACE
+#     - kubectl config use-context $K8_CLUSTER_NAME_EXT_PRD
+#     - helm init --client-only
+#     - cd repo/workdir/wso2-ha/external-subnet/
+#     - helm dep up ./$K8_CHART_NAME_WSO2_HA_EXT
+#   script:
+#     - CHART_VERSION=$(echo $CI_COMMIT_TAG | sed -E 's/^v(\d+\.\d+\.\d+).*$/\1/')
+#     - helm upgrade --install --namespace $K8_NAMESPACE_WSO2_HA --version "$CHART_VERSION" $K8_RELEASE_NAME_WSO2_EXT ./$K8_CHART_NAME_WSO2_HA_EXT
